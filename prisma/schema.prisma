@@ -1,0 +1,381 @@
+// This is your Prisma schema file
+// Provider: postgresql
+// Extension: postgis
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_URL")
+  extensions = [postgis]
+}
+
+// == AUTHENTICATION MODELS (Next-Auth.js) ==
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// == CORE APPLICATION MODELS ==
+
+model User {
+  id            String    @id @default(cuid())
+  email         String?   @unique
+  emailVerified DateTime?
+  password      String?   // Hashed password
+  image         String?   // Avatar URL
+  role          UserRole  @default(CUSTOMER)
+  isApproved    Boolean   @default(false) // For Admin to approve Providers
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  profile      Profile?
+  accounts     Account[]
+  sessions     Session[]
+  vehicles     Vehicle[] // As a Customer
+  bookings     Booking[] @relation("bookings") // As a Customer
+  services     Service[] // As a Provider
+  jobs         Booking[] @relation("jobs") // As a Provider (jobs)
+  givenRatings Rating[]  @relation("givenRatings") // As a Customer
+  ratings      Rating[]  @relation("ratings") // As a Provider
+  auditLogs    AuditLog[] // Actor entries
+  savedPlaces  SavedPlace[]
+  chatMessages ChatMessage[] @relation("chatMessages")
+
+  bookingAttachments     BookingAttachment[]     @relation("BookingAttachmentUploader")
+  availabilityWindows    AvailabilityWindow[]    @relation("UserAvailabilityWindows")
+  availabilityExceptions AvailabilityException[] @relation("UserAvailabilityExceptions")
+  bookingOffers          BookingOffer[]          @relation("BookingOffersOnUser")
+}
+
+model Profile {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  fullName  String
+  phone     String?
+  timezone  String?  // IANA time zone for provider availability calculations
+  roleNote  String?  // Additional detail about role: e.g. type of mechanic, specialization
+
+  // Optional address for geocoding
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  state        String?
+  postalCode   String?
+  country      String?
+
+  // Geospatial location for matching (PostGIS geography Point 4326)
+  // We use Unsupported type here; actual type is geography(Point, 4326)
+  location Unsupported("geography(Point,4326)")
+
+  // Vehicle owner preferences (for Customers)
+  prefersAtHomeService Boolean? @default(true)
+  prefersWorkshop      Boolean? @default(false)
+
+  // Provider metadata
+  yearsOfExperience Int?   // For Providers
+  bio               String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Vehicle {
+  id           String   @id @default(cuid())
+  userId       String
+  make         String
+  model        String
+  year         Int?
+  licensePlate String?
+  vin          String?  @unique
+  color        String?
+  notes        String?
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bookings Booking[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ServiceCategory {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  description String?
+  icon        String?
+
+  services  Service[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Service {
+  id          String   @id @default(cuid())
+  providerId  String
+  categoryId  String
+  name        String
+  description String?
+  basePrice   Float
+  minPrice    Float?
+  maxPrice    Float?
+  isActive    Boolean  @default(true)
+
+  provider User            @relation(fields: [providerId], references: [id])
+  category ServiceCategory @relation(fields: [categoryId], references: [id])
+  bookings Booking[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Booking {
+  id        String        @id @default(cuid())
+  status    BookingStatus @default(PENDING)
+  jobType   BookingType   @default(ON_DEMAND)
+  price     Float         // Final quoted price
+  date      DateTime      // When the job is scheduled/created
+  scheduledAt DateTime?   // Optional scheduled time (future)
+  problemDescription String?
+  addressLabel      String?
+  cancellationFee   Float?  // Applied when cancelled after confirmation
+  declineReason     String? // Provider-declared reason for decline
+
+  // Service location
+  latitude  Float
+  longitude Float
+
+  customerId String
+  customer   User   @relation("bookings", fields: [customerId], references: [id])
+
+  providerId String?
+  provider   User?  @relation("jobs", fields: [providerId], references: [id])
+
+  vehicleId String
+  vehicle   Vehicle @relation(fields: [vehicleId], references: [id])
+
+  serviceId String
+  service   Service @relation(fields: [serviceId], references: [id])
+
+  rating   Rating?
+  auditLogs    AuditLog[]
+  messages     ChatMessage[]
+  items        BookingItem[]
+  attachments  BookingAttachment[]
+  offers       BookingOffer[] @relation("BookingOffersOnBooking")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Rating {
+  id         String   @id @default(cuid())
+  score      Int      // 1-5
+  comment    String?
+
+  bookingId  String   @unique
+  booking    Booking  @relation(fields: [bookingId], references: [id])
+
+  customerId String
+  customer   User     @relation("givenRatings", fields: [customerId], references: [id])
+
+  providerId String
+  provider   User     @relation("ratings", fields: [providerId], references: [id])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String
+  bookingId String?
+  action    String
+  details   String?
+  createdAt DateTime @default(now())
+
+  actor   User     @relation(fields: [actorId], references: [id])
+  booking Booking? @relation(fields: [bookingId], references: [id])
+}
+
+model SavedPlace {
+  id        String   @id @default(cuid())
+  userId    String
+  label     String   // e.g., Home, Work, Favorite Mechanic
+  address   String
+  latitude  Float
+  longitude Float
+
+  user User @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ChatMessage {
+  id          String   @id @default(cuid())
+  bookingId   String
+  senderId    String
+  receiverId  String
+  content     String
+  sentAt      DateTime @default(now())
+  isRead      Boolean  @default(false)
+
+  booking Booking @relation(fields: [bookingId], references: [id])
+  sender  User    @relation("chatMessages", fields: [senderId], references: [id])
+  // Note: receiver can be modelled as a separate relation if needed
+
+  @@index([bookingId, sentAt])
+}
+
+model BookingItem {
+  id          String   @id @default(cuid())
+  bookingId   String
+  description String
+  quantity    Int      @default(1)
+  unitPrice   Float
+  totalPrice  Float
+
+  booking Booking @relation(fields: [bookingId], references: [id])
+
+  createdAt DateTime @default(now())
+}
+
+model BookingAttachment {
+  id         String   @id @default(cuid())
+  bookingId  String
+  booking    Booking  @relation(fields: [bookingId], references: [id])
+  uploaderId String
+  uploader   User     @relation("BookingAttachmentUploader", fields: [uploaderId], references: [id])
+  type       AttachmentType
+  url        String
+  caption    String?
+  createdAt  DateTime @default(now())
+
+  @@index([bookingId, createdAt])
+}
+
+model AvailabilityWindow {
+  id          String   @id @default(cuid())
+  providerId  String
+  provider    User     @relation("UserAvailabilityWindows", fields: [providerId], references: [id])
+  dayOfWeek   Int      // 0 (Sun) - 6 (Sat)
+  startMinute Int      // minutes from midnight (provider local time if timeZone set; otherwise UTC)
+  endMinute   Int      // minutes from midnight (provider local time if timeZone set; otherwise UTC)
+  createdAt   DateTime @default(now())
+
+  @@index([providerId, dayOfWeek])
+}
+
+model AvailabilityException {
+  id          String   @id @default(cuid())
+  providerId  String
+  provider    User     @relation("UserAvailabilityExceptions", fields: [providerId], references: [id])
+  dateKey     String   // Local date key in provider time zone, e.g. "2025-11-11"
+  startMinute Int      // minutes from midnight on dateKey
+  endMinute   Int      // minutes from midnight on dateKey
+  isAvailable Boolean  // true: available in this interval (overrides base); false: block interval
+  note        String?
+  createdAt   DateTime @default(now())
+
+  @@index([providerId, dateKey])
+}
+
+model BookingOffer {
+  id          String      @id @default(cuid())
+  bookingId   String
+  providerId  String
+  status      OfferStatus @default(SENT)
+  createdAt   DateTime    @default(now())
+  respondedAt DateTime?
+
+  booking  Booking @relation("BookingOffersOnBooking", fields: [bookingId], references: [id])
+  provider User    @relation("BookingOffersOnUser",    fields: [providerId], references: [id])
+
+  @@unique([bookingId, providerId])
+  @@index([providerId, status, createdAt])
+}
+
+// Geofenced regions (PostGIS polygons)
+model Region {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  polygon   Unsupported("geometry(MultiPolygon, 4326)")
+  priority  Int      @default(0)
+  parentId  String?
+  parent    Region?  @relation("RegionHierarchy", fields: [parentId], references: [id])
+  children  Region[] @relation("RegionHierarchy")
+  createdAt DateTime  @default(now())
+}
+
+// ENUMS
+
+enum UserRole {
+  CUSTOMER
+  PROVIDER
+  ADMIN
+}
+
+enum BookingStatus {
+  PENDING
+  QUOTED
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  DECLINED
+}
+
+enum BookingType {
+  ON_DEMAND
+  SCHEDULED
+}
+
+enum AttachmentType {
+  IMAGE
+  VIDEO
+  DOCUMENT
+}
+
+enum OfferStatus {
+  SENT
+  ACCEPTED
+  EXPIRED
+}
